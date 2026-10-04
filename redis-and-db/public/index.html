@@ -1,0 +1,1478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL & Redis Caching Strategies - Performance Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg-dark: #090c13;
+      --bg-card: rgba(15, 23, 42, 0.78);
+      --bg-card-hover: rgba(30, 41, 59, 0.88);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-highlight: rgba(99, 102, 241, 0.4);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      
+      --accent-postgres: #38bdf8;
+      --accent-postgres-glow: rgba(56, 189, 248, 0.18);
+      
+      --accent-redis: #10b981;
+      --accent-redis-glow: rgba(16, 185, 129, 0.2);
+      
+      --accent-write: #f43f5e;
+      --accent-write-glow: rgba(244, 63, 94, 0.18);
+      
+      --accent-brand: #6366f1;
+      --radius-lg: 16px;
+      --radius-md: 10px;
+      --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: var(--bg-dark);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.12) 0px, transparent 45%),
+        radial-gradient(at 100% 0%, rgba(16, 185, 129, 0.1) 0px, transparent 45%),
+        radial-gradient(at 50% 100%, rgba(244, 63, 94, 0.08) 0px, transparent 50%);
+      background-attachment: fixed;
+      color: var(--text-main);
+      min-height: 100vh;
+      padding: 1.75rem 1.5rem 4rem;
+    }
+
+    .container { max-width: 1320px; margin: 0 auto; }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .logo-group {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .logo-badge {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #dc2626, #ef4444 40%, #3b82f6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      box-shadow: 0 8px 20px rgba(239, 68, 68, 0.25);
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(to right, #ffffff, #cbd5e1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .header-subtitle {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .status-group {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.85rem;
+      border-radius: 9999px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      font-size: 0.8125rem;
+      font-weight: 600;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .dot-green { background-color: #10b981; box-shadow: 0 0 8px #10b981; }
+    .dot-red { background-color: #ef4444; box-shadow: 0 0 8px #ef4444; }
+
+    /* Comparison Banner */
+    .comparison-banner {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(56, 189, 248, 0.08));
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .banner-title {
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: #34d399;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .banner-stats {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .banner-metric {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+    }
+    .banner-metric strong {
+      color: #f8fafc;
+      font-size: 1.1rem;
+      margin-left: 0.25rem;
+    }
+
+    /* Stat KPI Cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 1.4rem;
+      position: relative;
+      overflow: hidden;
+      transition: var(--transition);
+    }
+
+    .card:hover {
+      border-color: var(--border-highlight);
+      transform: translateY(-2px);
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 3px;
+    }
+
+    .card-redis::before { background: linear-gradient(90deg, #10b981, #34d399); }
+    .card-pg-read::before { background: linear-gradient(90deg, #38bdf8, #60a5fa); }
+    .card-write::before { background: linear-gradient(90deg, #f43f5e, #fb7185); }
+    .card-hitrate::before { background: linear-gradient(90deg, #6366f1, #a855f7); }
+
+    .card-title {
+      font-size: 0.8125rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 600;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .card-value {
+      font-size: 2.1rem;
+      font-weight: 800;
+      margin: 0.5rem 0 0.25rem;
+      font-feature-settings: "tnum";
+    }
+
+    .card-meta {
+      font-size: 0.8125rem;
+      color: var(--text-muted);
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .text-redis { color: #34d399; }
+    .text-pg { color: #38bdf8; }
+    .text-write { color: #fb7185; }
+    .text-brand { color: #a5b4fc; }
+
+    .speedup-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.2rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 800;
+      background: rgba(16, 185, 129, 0.2);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #34d399;
+      margin-left: 0.5rem;
+    }
+
+    /* Controls Panel */
+    .controls-panel {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    @media (max-width: 900px) {
+      .controls-panel { grid-template-columns: 1fr; }
+    }
+
+    .control-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem 1.5rem;
+    }
+
+    .control-card h3 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 0.6rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    button {
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.875rem;
+      padding: 0.6rem 1.1rem;
+      border-radius: var(--radius-md);
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: var(--transition);
+    }
+
+    .btn-redis {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
+    }
+    .btn-redis:hover {
+      background: linear-gradient(135deg, #059669, #047857);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #4f46e5, #4338ca);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: #e5e7eb;
+      border: 1px solid var(--border-color);
+    }
+    .btn-secondary:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
+
+    .input-field {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.85rem;
+      color: #fff;
+      font-family: inherit;
+      font-size: 0.875rem;
+      outline: none;
+      transition: var(--transition);
+    }
+    .input-field:focus {
+      border-color: #6366f1;
+      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+    }
+
+    /* Charts Section */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    @media (max-width: 960px) {
+      .charts-grid { grid-template-columns: 1fr; }
+    }
+
+    .chart-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 1.5rem;
+    }
+
+    .chart-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.25rem;
+    }
+
+    .chart-title { font-size: 1rem; font-weight: 700; }
+
+    .chart-box {
+      position: relative;
+      height: 290px;
+      width: 100%;
+    }
+
+    /* ========================================= */
+    /* STRATEGIES LAB SECTION                    */
+    /* ========================================= */
+    .strategies-section {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      border-radius: var(--radius-lg);
+      padding: 1.75rem;
+      margin-bottom: 2rem;
+    }
+
+    .strategies-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .strategies-title {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: #f8fafc;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .strategy-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .strategy-card {
+      background: rgba(10, 14, 23, 0.85);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: var(--transition);
+      position: relative;
+    }
+
+    .strategy-card:hover {
+      border-color: var(--border-highlight);
+      transform: translateY(-2px);
+    }
+
+    .strategy-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; height: 3px;
+      border-radius: 4px 4px 0 0;
+    }
+
+    .strat-aside::before { background: #38bdf8; }
+    .strat-through::before { background: #6366f1; }
+    .strat-behind::before { background: #10b981; }
+    .strat-around::before { background: #f59e0b; }
+
+    .strategy-card-title {
+      font-size: 1rem;
+      font-weight: 700;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.4rem;
+    }
+
+    .strategy-metrics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      margin: 0.75rem 0;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 0.6rem;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .strat-metric-box {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .strat-metric-val {
+      font-size: 1.1rem;
+      font-weight: 800;
+      margin-top: 2px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .scenario-box {
+      background: rgba(99, 102, 241, 0.08);
+      border-left: 3px solid #6366f1;
+      padding: 0.6rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      color: #cbd5e1;
+      margin: 0.75rem 0 1rem;
+      line-height: 1.45;
+    }
+
+    .scenario-box strong {
+      color: #38bdf8;
+      display: block;
+      margin-bottom: 0.2rem;
+    }
+
+    .strategy-actions {
+      display: flex;
+      gap: 0.4rem;
+    }
+
+    .btn-test {
+      flex: 1;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.75rem;
+      justify-content: center;
+    }
+
+    /* History & Table */
+    .history-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+
+    @media (max-width: 860px) {
+      .history-grid { grid-template-columns: 1fr; }
+    }
+
+    .feed-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      max-height: 380px;
+      overflow-y: auto;
+    }
+
+    .feed-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 0.85rem;
+      border-radius: var(--radius-md);
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      font-size: 0.8125rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .badge {
+      padding: 0.2rem 0.5rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .badge-redis {
+      background: var(--accent-redis-glow);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .badge-pg {
+      background: var(--accent-postgres-glow);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+    .badge-write {
+      background: var(--accent-write-glow);
+      color: #fb7185;
+      border: 1px solid rgba(244, 63, 94, 0.3);
+    }
+
+    .items-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+    }
+
+    .items-table th {
+      text-align: left;
+      padding: 0.6rem;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-color);
+      font-weight: 600;
+    }
+
+    .items-table td {
+      padding: 0.6rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: #e5e7eb;
+    }
+
+    .btn-sm { padding: 0.25rem 0.55rem; font-size: 0.75rem; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="logo-group">
+        <div class="logo-badge">⚡</div>
+        <div>
+          <h1>PostgreSQL & Redis Caching Strategies Lab</h1>
+          <div class="header-subtitle">Comparative Latency & Scenario Analysis: Cache-Aside, Write-Through, Write-Behind & Write-Around</div>
+        </div>
+      </div>
+      <div class="status-group">
+        <div id="pgStatus" class="status-pill">
+          <span class="status-dot dot-green"></span>
+          <span>PostgreSQL: Connected</span>
+        </div>
+        <div id="redisStatus" class="status-pill">
+          <span class="status-dot dot-green"></span>
+          <span id="redisStatusText">Redis: Connected</span>
+        </div>
+        <button class="btn-secondary btn-sm" onclick="resetMetrics()">🔄 Reset Stats</button>
+      </div>
+    </header>
+
+    <!-- Speedup Highlight Banner -->
+    <div class="comparison-banner">
+      <div>
+        <div class="banner-title">
+          <span>🚀 Redis In-Memory Acceleration</span>
+          <span id="bannerSpeedup" class="speedup-badge">Calculating...</span>
+        </div>
+        <div id="bannerText" style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Evaluating side-by-side latency between Redis in-memory cache and PostgreSQL disk queries.
+        </div>
+      </div>
+      <div class="banner-stats">
+        <div class="banner-metric">Redis Avg Read:<strong id="bannerRedisAvg" class="text-redis">0.00 ms</strong></div>
+        <div class="banner-metric">Postgres Avg Read:<strong id="bannerPgAvg" class="text-pg">0.00 ms</strong></div>
+        <div class="banner-metric">Cache Hit Rate:<strong id="bannerHitRate" class="text-brand">100%</strong></div>
+      </div>
+    </div>
+
+    <!-- Top KPI Cards -->
+    <div class="stats-grid">
+      <!-- Redis Cached Read -->
+      <div class="card card-redis">
+        <div class="card-title">
+          <span>Redis Cached Read</span>
+          <span>⚡ IN-MEMORY</span>
+        </div>
+        <div class="card-value text-redis">
+          <span id="valRedisAvg">0.00</span> <span style="font-size: 1rem;">ms</span>
+        </div>
+        <div class="card-meta">
+          <span>Hits: <strong id="valRedisHits">0</strong></span>
+          <span>Min: <span id="valRedisMin">0</span>ms</span>
+          <span>P95: <span id="valRedisP95">0</span>ms</span>
+        </div>
+      </div>
+
+      <!-- PostgreSQL Direct Read -->
+      <div class="card card-pg-read">
+        <div class="card-title">
+          <span>PostgreSQL Direct Read</span>
+          <span>🐘 DISK DB</span>
+        </div>
+        <div class="card-value text-pg">
+          <span id="valPgAvg">0.00</span> <span style="font-size: 1rem;">ms</span>
+        </div>
+        <div class="card-meta">
+          <span>Queries: <strong id="valPgReads">0</strong></span>
+          <span>Max: <span id="valPgMax">0</span>ms</span>
+          <span>P95: <span id="valPgP95">0</span>ms</span>
+        </div>
+      </div>
+
+      <!-- PostgreSQL Write -->
+      <div class="card card-write">
+        <div class="card-title">
+          <span>PostgreSQL Write Latency</span>
+          <span>✍️ INSERT/UPDATE</span>
+        </div>
+        <div class="card-value text-write">
+          <span id="valWriteAvg">0.00</span> <span style="font-size: 1rem;">ms</span>
+        </div>
+        <div class="card-meta">
+          <span>Writes: <strong id="valWrites">0</strong></span>
+          <span>Cache Invalidations: <span id="valCacheDels">0</span></span>
+        </div>
+      </div>
+
+      <!-- Cache Hit Rate -->
+      <div class="card card-hitrate">
+        <div class="card-title">
+          <span>Cache Hit Efficiency</span>
+          <span>🎯 RATIO</span>
+        </div>
+        <div class="card-value text-brand">
+          <span id="valHitRate">100</span><span style="font-size: 1.2rem;">%</span>
+        </div>
+        <div class="card-meta">
+          <span>Hits: <span id="cntHits">0</span></span>
+          <span>Misses: <span id="cntMisses">0</span></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- =================================================== -->
+    <!-- REDIS CACHING STRATEGIES LAB & SCENARIO COMPARISON  -->
+    <!-- =================================================== -->
+    <div class="strategies-section">
+      <div class="strategies-header">
+        <div>
+          <div class="strategies-title">
+            <span>🧠 Redis Caching Strategies Lab (4 Core Architectural Patterns)</span>
+          </div>
+          <p style="font-size: 0.8125rem; color: var(--text-muted); margin-top: 0.25rem;">
+            Run comparative benchmarks across Cache-Aside, Write-Through, Write-Behind, and Write-Around to observe real-world latency trade-offs.
+          </p>
+        </div>
+        <div style="display: flex; gap: 0.6rem; align-items: center;">
+          <select id="stratIterations" class="input-field" style="max-width: 140px; margin-bottom: 0;">
+            <option value="10">10 Iterations</option>
+            <option value="15" selected>15 Iterations</option>
+            <option value="30">30 Iterations</option>
+          </select>
+          <button id="btnRunStratBench" class="btn-primary" onclick="runStrategiesBenchmark()">
+            🚀 Benchmark All 4 Strategies
+          </button>
+        </div>
+      </div>
+
+      <!-- Strategy Comparison Bar Chart -->
+      <div class="chart-container" style="margin-bottom: 1.5rem; background: rgba(10, 14, 23, 0.9);">
+        <div class="chart-header">
+          <div class="chart-title">📊 Strategy Latency Comparison: Write vs. Read Latency (ms)</div>
+          <span style="font-size: 0.75rem; color: var(--text-muted);">Lower latency = faster performance</span>
+        </div>
+        <div class="chart-box" style="height: 280px;">
+          <canvas id="strategyComparisonChart"></canvas>
+        </div>
+      </div>
+
+      <!-- 4 Strategy Cards -->
+      <div class="strategy-grid">
+        <!-- 1. Cache-Aside -->
+        <div class="strategy-card strat-aside">
+          <div>
+            <div class="strategy-card-title">
+              <span>Cache-Aside</span>
+              <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">Lazy Load</span>
+            </div>
+            <p style="font-size: 0.75rem; color: var(--text-muted);">
+              Read cache first; on miss query DB & populate. Writes write to DB and invalidate cache.
+            </p>
+            <div class="strategy-metrics">
+              <div class="strat-metric-box">
+                Avg Write:
+                <div id="asideWriteMs" class="strat-metric-val text-write">-- ms</div>
+              </div>
+              <div class="strat-metric-box">
+                Avg Read:
+                <div id="asideReadMs" class="strat-metric-val text-pg">-- ms</div>
+              </div>
+            </div>
+            <div class="scenario-box">
+              <strong>🏆 When it's Best:</strong>
+              General CRUD, read-heavy workloads with unpredictable access patterns (user profiles, catalogs). Safe against cache crashes.
+            </div>
+          </div>
+          <div class="strategy-actions">
+            <button class="btn-secondary btn-test" onclick="testStrategyAction('cache-aside', 'read')">Test Read</button>
+            <button class="btn-primary btn-test" onclick="testStrategyAction('cache-aside', 'write')">Test Write</button>
+          </div>
+        </div>
+
+        <!-- 2. Write-Through -->
+        <div class="strategy-card strat-through">
+          <div>
+            <div class="strategy-card-title">
+              <span>Write-Through</span>
+              <span class="badge" style="background: rgba(99, 102, 241, 0.2); color: #a5b4fc;">Zero Stale</span>
+            </div>
+            <p style="font-size: 0.75rem; color: var(--text-muted);">
+              Synchronously writes to PostgreSQL DB AND updates Redis cache before acknowledging.
+            </p>
+            <div class="strategy-metrics">
+              <div class="strat-metric-box">
+                Avg Write:
+                <div id="throughWriteMs" class="strat-metric-val text-write">-- ms</div>
+              </div>
+              <div class="strat-metric-box">
+                Avg Read:
+                <div id="throughReadMs" class="strat-metric-val text-redis">-- ms</div>
+              </div>
+            </div>
+            <div class="scenario-box">
+              <strong>🏆 When it's Best:</strong>
+              Strict data consistency: financial balances, inventory counts, active sessions where stale reads are forbidden.
+            </div>
+          </div>
+          <div class="strategy-actions">
+            <button class="btn-secondary btn-test" onclick="testStrategyAction('write-through', 'read')">Test Read</button>
+            <button class="btn-primary btn-test" onclick="testStrategyAction('write-through', 'write')">Test Write</button>
+          </div>
+        </div>
+
+        <!-- 3. Write-Behind (Write-Back) -->
+        <div class="strategy-card strat-behind">
+          <div>
+            <div class="strategy-card-title">
+              <span>Write-Behind</span>
+              <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399;">Ultra Fast</span>
+            </div>
+            <p style="font-size: 0.75rem; color: var(--text-muted);">
+              Writes immediately to Redis RAM (&lt; 2ms); background worker flushes batches to DB asynchronously.
+            </p>
+            <div class="strategy-metrics">
+              <div class="strat-metric-box">
+                Avg Write:
+                <div id="behindWriteMs" class="strat-metric-val text-redis">-- ms</div>
+              </div>
+              <div class="strat-metric-box">
+                Avg Read:
+                <div id="behindReadMs" class="strat-metric-val text-redis">-- ms</div>
+              </div>
+            </div>
+            <div class="scenario-box">
+              <strong>🏆 When it's Best:</strong>
+              Massive write spikes: gaming leaderboards, analytics clickstream, telemetry, vote counting, IoT sensor feeds.
+            </div>
+          </div>
+          <div class="strategy-actions">
+            <button class="btn-secondary btn-test" onclick="testStrategyAction('write-behind', 'read')">Test Read</button>
+            <button class="btn-primary btn-test" onclick="testStrategyAction('write-behind', 'write')">Test Write</button>
+          </div>
+        </div>
+
+        <!-- 4. Write-Around -->
+        <div class="strategy-card strat-around">
+          <div>
+            <div class="strategy-card-title">
+              <span>Write-Around</span>
+              <span class="badge" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24;">No Pollution</span>
+            </div>
+            <p style="font-size: 0.75rem; color: var(--text-muted);">
+              Writes directly to PostgreSQL only without warming Redis cache. Only cached when requested.
+            </p>
+            <div class="strategy-metrics">
+              <div class="strat-metric-box">
+                Avg Write:
+                <div id="aroundWriteMs" class="strat-metric-val text-write">-- ms</div>
+              </div>
+              <div class="strat-metric-box">
+                Avg Read:
+                <div id="aroundReadMs" class="strat-metric-val text-pg">-- ms</div>
+              </div>
+            </div>
+            <div class="scenario-box">
+              <strong>🏆 When it's Best:</strong>
+              Write-once, read-rarely data: generated invoice PDFs, compliance archives, audit logs. Prevents cache memory churn.
+            </div>
+          </div>
+          <div class="strategy-actions">
+            <button class="btn-secondary btn-test" onclick="testStrategyAction('write-around', 'read')">Test Read</button>
+            <button class="btn-primary btn-test" onclick="testStrategyAction('write-around', 'write')">Test Write</button>
+          </div>
+        </div>
+      </div>
+      <div id="strategyBanner" style="font-size: 0.8125rem; color: #34d399; font-weight: 600; text-align: center;"></div>
+    </div>
+
+    <!-- Controls Panel -->
+    <div class="controls-panel">
+      <!-- Comparison Benchmark Runner -->
+      <div class="control-card">
+        <h3>⚡ Run Redis vs. PostgreSQL Comparison</h3>
+        <p style="font-size: 0.8125rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+          Executes identical read queries against direct PostgreSQL and Redis cache in pairs to compute precise comparative latency and speedup.
+        </p>
+        <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;">
+          <select id="compareIterations" class="input-field" style="max-width: 150px;">
+            <option value="10">10 Iterations</option>
+            <option value="25" selected>25 Iterations</option>
+            <option value="50">50 Iterations</option>
+          </select>
+          <button id="btnCompare" class="btn-redis" onclick="runComparisonBenchmark()">
+            🔥 Run Comparison Benchmark
+          </button>
+        </div>
+        <div id="compareResult" style="font-size: 0.75rem; color: #34d399; margin-top: 0.6rem; min-height: 1.2rem;"></div>
+      </div>
+
+      <!-- Quick CRUD Operations -->
+      <div class="control-card">
+        <h3>➕ Test Live CRUD & Cache Invalidation</h3>
+        <form onsubmit="handleQuickCreate(event)" style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.6rem;">
+          <input type="text" id="newTitle" class="input-field" placeholder="New Item Title" required style="flex: 2; min-width: 150px;">
+          <button type="submit" class="btn-primary" style="white-space: nowrap;">Write (Invalidates Cache)</button>
+        </form>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button class="btn-secondary btn-sm" onclick="fetchItems(false)">⚡ Read Cached (Redis)</button>
+          <button class="btn-secondary btn-sm" onclick="fetchItems(true)">🐘 Read Direct (Bypass Cache)</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts Section -->
+    <div class="charts-grid">
+      <!-- Line Chart: Latency Timeline -->
+      <div class="chart-container">
+        <div class="chart-header">
+          <div class="chart-title">📈 Real-time Latency: Redis Cache vs Postgres vs Writes</div>
+          <span style="font-size: 0.75rem; color: var(--text-muted);">Lower is faster</span>
+        </div>
+        <div class="chart-box">
+          <canvas id="timelineChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Bar Chart: Average Latency Comparison -->
+      <div class="chart-container">
+        <div class="chart-header">
+          <div class="chart-title">📊 Latency Comparison (ms)</div>
+          <span style="font-size: 0.75rem; color: var(--text-muted);">Average execution time</span>
+        </div>
+        <div class="chart-box">
+          <canvas id="comparisonChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Activity Feed and Database Table -->
+    <div class="history-grid">
+      <!-- Activity Feed -->
+      <div class="chart-container">
+        <div class="chart-header">
+          <div class="chart-title">⏱️ Real-time Query & Cache Activity</div>
+          <span style="font-size: 0.75rem; color: var(--text-muted);">High-resolution metrics</span>
+        </div>
+        <div id="feedList" class="feed-list"></div>
+      </div>
+
+      <!-- Current Items Table -->
+      <div class="chart-container">
+        <div class="chart-header">
+          <div class="chart-title">📋 PostgreSQL Records <span id="lastDataSource" style="font-size: 0.75rem; color: #34d399; margin-left: 0.5rem;"></span></div>
+          <button class="btn-secondary btn-sm" onclick="fetchItems(false)">Refresh</button>
+        </div>
+        <div style="max-height: 380px; overflow-y: auto;">
+          <table class="items-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="itemsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let timelineChart = null;
+    let comparisonChart = null;
+    let strategyChart = null;
+
+    function initCharts() {
+      // 1. Line Chart: Timeline
+      const ctxLine = document.getElementById('timelineChart').getContext('2d');
+      timelineChart = new Chart(ctxLine, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: 'Redis Cache Read (ms)',
+              data: [],
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              tension: 0.3,
+              borderWidth: 2,
+              pointRadius: 3,
+              pointBackgroundColor: '#10b981',
+              fill: true,
+            },
+            {
+              label: 'PostgreSQL Read (ms)',
+              data: [],
+              borderColor: '#38bdf8',
+              backgroundColor: 'rgba(56, 189, 248, 0.1)',
+              tension: 0.3,
+              borderWidth: 2,
+              pointRadius: 3,
+              pointBackgroundColor: '#38bdf8',
+              fill: true,
+            },
+            {
+              label: 'PostgreSQL Write (ms)',
+              data: [],
+              borderColor: '#f43f5e',
+              backgroundColor: 'rgba(244, 63, 94, 0.08)',
+              tension: 0.3,
+              borderWidth: 2,
+              pointRadius: 3,
+              pointBackgroundColor: '#f43f5e',
+              fill: false,
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: { duration: 300 },
+          scales: {
+            x: {
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: '#94a3b8', font: { family: 'JetBrains Mono', size: 10 } }
+            },
+            y: {
+              beginAtZero: true,
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: '#94a3b8', font: { family: 'JetBrains Mono', size: 10 } },
+              title: { display: true, text: 'Milliseconds (ms)', color: '#94a3b8' }
+            }
+          },
+          plugins: {
+            legend: { labels: { color: '#e2e8f0', font: { family: 'Plus Jakarta Sans', weight: 600 } } }
+          }
+        }
+      });
+
+      // 2. Bar Chart: Average Comparison
+      const ctxBar = document.getElementById('comparisonChart').getContext('2d');
+      comparisonChart = new Chart(ctxBar, {
+        type: 'bar',
+        data: {
+          labels: ['Redis Cache Read', 'PostgreSQL Read', 'PostgreSQL Write'],
+          datasets: [{
+            label: 'Avg Response Time (ms)',
+            data: [0, 0, 0],
+            backgroundColor: ['#10b981', '#38bdf8', '#f43f5e'],
+            borderRadius: 8,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { ticks: { color: '#e2e8f0', font: { family: 'Plus Jakarta Sans', weight: 600, size: 11 } } },
+            y: {
+              beginAtZero: true,
+              grid: { color: 'rgba(255, 255, 255, 0.04)' },
+              ticks: { color: '#94a3b8' },
+              title: { display: true, text: 'Avg Latency (ms)', color: '#94a3b8' }
+            }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+
+      // 3. Strategy Comparison Grouped Bar Chart
+      const ctxStrat = document.getElementById('strategyComparisonChart').getContext('2d');
+      strategyChart = new Chart(ctxStrat, {
+        type: 'bar',
+        data: {
+          labels: ['Cache-Aside', 'Write-Through', 'Write-Behind (Write-Back)', 'Write-Around'],
+          datasets: [
+            {
+              label: 'Avg Write Latency (ms)',
+              data: [10.3, 8.6, 2.2, 5.8],
+              backgroundColor: '#f43f5e',
+              borderRadius: 6,
+            },
+            {
+              label: 'Avg Read Latency (ms)',
+              data: [7.7, 1.3, 1.0, 2.2],
+              backgroundColor: '#10b981',
+              borderRadius: 6,
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: {
+              ticks: { color: '#e2e8f0', font: { family: 'Plus Jakarta Sans', weight: 600, size: 11 } }
+            },
+            y: {
+              beginAtZero: true,
+              grid: { color: 'rgba(255, 255, 255, 0.05)' },
+              ticks: { color: '#94a3b8' },
+              title: { display: true, text: 'Latency in Milliseconds (ms)', color: '#94a3b8' }
+            }
+          },
+          plugins: {
+            legend: { labels: { color: '#e2e8f0', font: { family: 'Plus Jakarta Sans', weight: 600 } } }
+          }
+        }
+      });
+    }
+
+    async function checkHealth() {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        
+        const pgPill = document.getElementById('pgStatus');
+        const redisPill = document.getElementById('redisStatus');
+
+        if (data.database && data.database.status === 'connected') {
+          pgPill.innerHTML = '<span class="status-dot dot-green"></span><span>PostgreSQL: Connected</span>';
+        } else {
+          pgPill.innerHTML = '<span class="status-dot dot-red"></span><span>PostgreSQL: Disconnected</span>';
+        }
+
+        if (data.redis && data.redis.status === 'connected') {
+          const pingStr = data.redis.pingMs ? ` (${data.redis.pingMs}ms)` : '';
+          redisPill.innerHTML = `<span class="status-dot dot-green"></span><span>Redis: Connected${pingStr}</span>`;
+        } else {
+          redisPill.innerHTML = '<span class="status-dot dot-red"></span><span>Redis: Disconnected</span>';
+        }
+      } catch (e) {
+        console.error('Health check error:', e);
+      }
+    }
+
+    async function refreshMetrics() {
+      try {
+        const res = await fetch('/api/metrics');
+        const json = await res.json();
+        if (!json.success || !json.data) return;
+
+        const summary = json.data.summary || json.data;
+        const recentHistory = json.data.recentHistory || [];
+
+        const postgres = summary.postgres || {
+          writes: { count: 0, avgMs: 0, minMs: 0, maxMs: 0, p95Ms: 0 },
+          reads: { count: 0, avgMs: 0, minMs: 0, maxMs: 0, p95Ms: 0 }
+        };
+
+        const redisData = summary.redis || {
+          reads: { count: 0, avgMs: 0, minMs: 0, maxMs: 0, p95Ms: 0 },
+          cacheStats: { hits: 0, misses: 0, hitRatePercent: 100 },
+          speedupMultiplier: 1.0
+        };
+
+        const actions = summary.actions || {};
+
+        // Redis Card
+        const redisAvg = redisData.reads?.avgMs ?? 0;
+        document.getElementById('valRedisAvg').textContent = Number(redisAvg).toFixed(2);
+        document.getElementById('valRedisHits').textContent = redisData.cacheStats?.hits ?? 0;
+        document.getElementById('valRedisMin').textContent = redisData.reads?.minMs ?? 0;
+        document.getElementById('valRedisP95').textContent = redisData.reads?.p95Ms ?? 0;
+
+        // Postgres Card
+        const pgAvg = postgres.reads?.avgMs ?? 0;
+        document.getElementById('valPgAvg').textContent = Number(pgAvg).toFixed(2);
+        document.getElementById('valPgReads').textContent = postgres.reads?.count ?? 0;
+        document.getElementById('valPgMax').textContent = postgres.reads?.maxMs ?? 0;
+        document.getElementById('valPgP95').textContent = postgres.reads?.p95Ms ?? 0;
+
+        // Write Card
+        const writeAvg = postgres.writes?.avgMs ?? 0;
+        document.getElementById('valWriteAvg').textContent = Number(writeAvg).toFixed(2);
+        document.getElementById('valWrites').textContent = postgres.writes?.count ?? 0;
+        document.getElementById('valCacheDels').textContent = actions.CACHE_DEL || 0;
+
+        // Hit Rate Card
+        const hitRate = redisData.cacheStats?.hitRatePercent ?? 100;
+        document.getElementById('valHitRate').textContent = hitRate;
+        document.getElementById('cntHits').textContent = redisData.cacheStats?.hits ?? 0;
+        document.getElementById('cntMisses').textContent = redisData.cacheStats?.misses ?? 0;
+
+        // Banner
+        const speedup = redisData.speedupMultiplier > 1 ? `${redisData.speedupMultiplier}x FASTER` : 'Ready';
+        document.getElementById('bannerSpeedup').textContent = speedup;
+        document.getElementById('bannerRedisAvg').textContent = `${Number(redisAvg).toFixed(2)} ms`;
+        document.getElementById('bannerPgAvg').textContent = `${Number(pgAvg).toFixed(2)} ms`;
+        document.getElementById('bannerHitRate').textContent = `${hitRate}%`;
+
+        if (redisData.speedupMultiplier > 1) {
+          document.getElementById('bannerText').textContent = 
+            `Redis in-memory caching serves read responses ${redisData.speedupMultiplier}x faster than PostgreSQL direct queries!`;
+        }
+
+        // Update Comparison Bar Chart
+        if (comparisonChart) {
+          comparisonChart.data.datasets[0].data = [
+            redisAvg,
+            pgAvg,
+            writeAvg,
+          ];
+          comparisonChart.update();
+        }
+
+        // Update Timeline Chart
+        if (timelineChart) {
+          const labels = [];
+          const redisLine = [];
+          const pgReadLine = [];
+          const pgWriteLine = [];
+
+          recentHistory.forEach((h, idx) => {
+            labels.push(`#${idx + 1}`);
+            if (h.source === 'redis' && h.type === 'read') {
+              redisLine.push(h.durationMs);
+              pgReadLine.push(null);
+              pgWriteLine.push(null);
+            } else if (h.source === 'postgres' && h.type === 'read') {
+              pgReadLine.push(h.durationMs);
+              redisLine.push(null);
+              pgWriteLine.push(null);
+            } else if (h.type === 'write') {
+              pgWriteLine.push(h.durationMs);
+              redisLine.push(null);
+              pgReadLine.push(null);
+            }
+          });
+
+          timelineChart.data.labels = labels;
+          timelineChart.data.datasets[0].data = redisLine;
+          timelineChart.data.datasets[1].data = pgReadLine;
+          timelineChart.data.datasets[2].data = pgWriteLine;
+          timelineChart.update();
+        }
+
+        renderFeed(recentHistory);
+      } catch (err) {
+        console.error('Error refreshing metrics:', err);
+      }
+    }
+
+    function renderFeed(history) {
+      const feed = document.getElementById('feedList');
+      if (!history || history.length === 0) {
+        feed.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8125rem; text-align: center; padding: 2rem;">No queries recorded yet.</div>';
+        return;
+      }
+
+      feed.innerHTML = [...history].reverse().slice(0, 16).map(h => {
+        let badgeClass = 'badge-pg';
+        let badgeText = `${h.source.toUpperCase()} ${h.action}`;
+        let timeColor = '#38bdf8';
+
+        if (h.source === 'redis') {
+          badgeClass = 'badge-redis';
+          timeColor = '#34d399';
+        } else if (h.type === 'write') {
+          badgeClass = 'badge-write';
+          timeColor = '#fb7185';
+        }
+
+        return `
+          <div class="feed-item">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+              <span class="badge ${badgeClass}">${badgeText}</span>
+              <span style="color: #94a3b8; font-size: 0.75rem;">${h.rowCount} rows</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+              <span style="color: ${timeColor}; font-weight: 700;">${h.durationMs.toFixed(2)} ms</span>
+              <span style="color: #64748b; font-size: 0.75rem;">${new Date(h.timestamp).toLocaleTimeString()}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ==========================================
+    // STRATEGIES BENCHMARK LOGIC
+    // ==========================================
+    async function runStrategiesBenchmark() {
+      const btn = document.getElementById('btnRunStratBench');
+      const banner = document.getElementById('strategyBanner');
+      const iterations = document.getElementById('stratIterations').value;
+
+      btn.disabled = true;
+      btn.textContent = '⏳ Benchmarking 4 Strategies...';
+      banner.textContent = `Running workload (${iterations} writes & reads) across all 4 caching strategies...`;
+
+      try {
+        const res = await fetch('/api/strategies/benchmark', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ iterations })
+        });
+        const data = await res.json();
+        if (data.success && data.benchmark) {
+          const b = data.benchmark;
+
+          // Update Card Values
+          document.getElementById('asideWriteMs').textContent = `${b['cache-aside'].write.avgMs} ms`;
+          document.getElementById('asideReadMs').textContent = `${b['cache-aside'].read.avgMs} ms`;
+
+          document.getElementById('throughWriteMs').textContent = `${b['write-through'].write.avgMs} ms`;
+          document.getElementById('throughReadMs').textContent = `${b['write-through'].read.avgMs} ms`;
+
+          document.getElementById('behindWriteMs').textContent = `${b['write-behind'].write.avgMs} ms`;
+          document.getElementById('behindReadMs').textContent = `${b['write-behind'].read.avgMs} ms`;
+
+          document.getElementById('aroundWriteMs').textContent = `${b['write-around'].write.avgMs} ms`;
+          document.getElementById('aroundReadMs').textContent = `${b['write-around'].read.avgMs} ms`;
+
+          // Update Strategy Chart
+          if (strategyChart) {
+            strategyChart.data.datasets[0].data = [
+              b['cache-aside'].write.avgMs,
+              b['write-through'].write.avgMs,
+              b['write-behind'].write.avgMs,
+              b['write-around'].write.avgMs,
+            ];
+            strategyChart.data.datasets[1].data = [
+              b['cache-aside'].read.avgMs,
+              b['write-through'].read.avgMs,
+              b['write-behind'].read.avgMs,
+              b['write-around'].read.avgMs,
+            ];
+            strategyChart.update();
+          }
+
+          banner.innerHTML = `
+            ✅ Benchmark Completed! <strong>Write-Behind</strong> delivered fastest writes (<strong>${b['write-behind'].write.avgMs}ms</strong>) | <strong>Write-Through</strong> guaranteed 100% warm reads (<strong>${b['write-through'].read.avgMs}ms</strong>).
+          `;
+        }
+      } catch (err) {
+        banner.textContent = '❌ Failed to benchmark strategies';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🚀 Benchmark All 4 Strategies';
+      }
+    }
+
+    async function testStrategyAction(strat, action) {
+      const banner = document.getElementById('strategyBanner');
+      banner.textContent = `Testing ${strat} ${action}...`;
+
+      try {
+        const method = action === 'write' ? 'POST' : 'GET';
+        const body = action === 'write' ? JSON.stringify({ title: `Interactive ${strat} item` }) : undefined;
+        const headers = action === 'write' ? { 'Content-Type': 'application/json' } : undefined;
+
+        const res = await fetch(`/api/strategies/${strat}/items`, { method, headers, body });
+        const json = await res.json();
+
+        banner.innerHTML = `
+          ⚡ [${strat.toUpperCase()}] ${action.toUpperCase()} finished in <strong>${json.latencyMs} ms</strong> (Source: ${json.source || json.action}).
+        `;
+        refreshMetrics();
+      } catch (err) {
+        banner.textContent = `❌ ${strat} ${action} failed`;
+      }
+    }
+
+    async function runComparisonBenchmark() {
+      const iter = document.getElementById('compareIterations').value;
+      const btn = document.getElementById('btnCompare');
+      const resultBox = document.getElementById('compareResult');
+
+      btn.disabled = true;
+      btn.textContent = '⏳ Benchmarking...';
+      resultBox.textContent = `Running ${iter} queries each on PostgreSQL vs. Redis...`;
+
+      try {
+        const res = await fetch('/api/metrics/benchmark-cache', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ iterations: iter })
+        });
+        const data = await res.json();
+        if (data.success) {
+          const comp = data.comparison;
+          resultBox.innerHTML = `
+            <strong>🎯 Benchmark Complete:</strong> Redis Avg: <strong>${comp.redis.avgMs}ms</strong> vs Postgres Avg: <strong>${comp.postgresql.avgMs}ms</strong> — <span style="color: #34d399; font-weight: 800;">Redis is ${comp.speedupMultiplier}x faster!</span>
+          `;
+        }
+      } catch (e) {
+        resultBox.textContent = '❌ Benchmark failed';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🔥 Run Comparison Benchmark';
+        await refreshMetrics();
+        await fetchItems(false);
+      }
+    }
+
+    async function fetchItems(bypassCache = false) {
+      try {
+        const url = bypassCache ? '/api/items?no_cache=true' : '/api/items';
+        const res = await fetch(url);
+        const json = await res.json();
+        if (!json.success) return;
+
+        const sourceLabel = document.getElementById('lastDataSource');
+        if (json.source && json.source.includes('redis')) {
+          sourceLabel.innerHTML = '<span class="badge badge-redis">Served from Redis Cache (HIT)</span>';
+        } else {
+          sourceLabel.innerHTML = '<span class="badge badge-pg">Served from PostgreSQL (MISS)</span>';
+        }
+
+        const tbody = document.getElementById('itemsTableBody');
+        if (json.data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">No items in database</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = json.data.slice(0, 10).map(item => `
+          <tr>
+            <td style="font-family: 'JetBrains Mono', monospace; color: #94a3b8;">#${item.id}</td>
+            <td style="font-weight: 600;">${escapeHtml(item.title)}</td>
+            <td><span class="badge" style="background: rgba(255,255,255,0.06); color: #cbd5e1;">${item.status}</span></td>
+            <td>
+              <div style="display: flex; gap: 0.4rem;">
+                <button class="btn-secondary btn-sm" onclick="toggleStatus(${item.id}, '${item.status === 'completed' ? 'pending' : 'completed'}')">
+                  ${item.status === 'completed' ? '↩ Reopen' : '✓ Done'}
+                </button>
+                <button class="btn-danger btn-sm" onclick="deleteItem(${item.id})">✕</button>
+              </div>
+            </td>
+          </tr>
+        `).join('');
+
+        refreshMetrics();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function handleQuickCreate(e) {
+      e.preventDefault();
+      const titleInput = document.getElementById('newTitle');
+      const title = titleInput.value.trim();
+      if (!title) return;
+
+      try {
+        const res = await fetch('/api/items', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, status: 'pending' })
+        });
+        if (res.ok) {
+          titleInput.value = '';
+          await fetchItems(false);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function toggleStatus(id, newStatus) {
+      try {
+        await fetch(`/api/items/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        await fetchItems(false);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function deleteItem(id) {
+      try {
+        await fetch(`/api/items/${id}`, { method: 'DELETE' });
+        await fetchItems(false);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function resetMetrics() {
+      try {
+        await fetch('/api/metrics/reset', { method: 'POST' });
+        await refreshMetrics();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/[&<>"']/g, m => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[m]));
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      initCharts();
+      checkHealth();
+      refreshMetrics();
+      fetchItems(false);
+      runStrategiesBenchmark(); // Auto populate benchmark numbers on load
+      setInterval(refreshMetrics, 2500);
+      setInterval(checkHealth, 5000);
+    });
+  </script>
+</body>
+</html>
